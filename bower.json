@@ -1,0 +1,26 @@
+{
+  "name": "SampleKrakenJS",
+  "main": "index.js",
+  "version": "0.0.0",
+  "homepage": "https://github.com/anhtrantuan/SampleKrakenJS",
+  "authors": [
+    "anhtrantuan <anhtrantuan.hcmc@gmail.com>"
+  ],
+  "description": "Sample Kraken.js application",
+  "moduleType": [
+    "node"
+  ],
+  "license": "MIT",
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "public/components",
+    "test",
+    "tests"
+  ],
+  "dependencies": {
+    "dustjs-linkedin-helpers": "~1.2.0",
+    "dustjs-linkedin": "~2.3.0"
+  }
+}
