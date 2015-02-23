@@ -20,7 +20,11 @@
     "tests"
   ],
   "dependencies": {
-    "dustjs-linkedin-helpers": "~1.2.0",
-    "dustjs-linkedin": "~2.3.0"
+    "dustjs-linkedin-helpers": "~1.5.0",
+    "dustjs-linkedin": "~2.5.1"
+  },
+  "resolutions": {
+    "dustjs-linkedin-helpers": "~1.5.0",
+    "dustjs-linkedin": "~2.5.1"
   }
 }

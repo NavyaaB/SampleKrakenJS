@@ -1,4 +1,4 @@
-/*! Dust - Asynchronous Templating - v2.3.6
+/*! Dust - Asynchronous Templating - v2.5.1
 * http://linkedin.github.io/dustjs/
 * Copyright (c) 2014 Aleksander Williams; Released under the MIT License */
 (function(root) {
@@ -15,7 +15,25 @@
       loggerContext;
 
   dust.debugLevel = NONE;
-  dust.silenceErrors = false;
+
+  dust.config = {
+    whitespace: false,
+  };
+
+  // Directive aliases to minify code
+  dust._aliases = {
+    "write": "w",
+    "end": "e",
+    "map": "m",
+    "render": "r",
+    "reference": "f",
+    "section": "s",
+    "exists": "x",
+    "notexists": "nx",
+    "block": "b",
+    "partial": "p",
+    "helper": "h"
+  };
 
   // Try to find the console in global scope
   if (root && root.console && root.console.log) {
@@ -41,7 +59,8 @@
   } : function() { /* no op */ };
 
   /**
-   * If dust.isDebug is true, Log dust debug statements, info statements, warning statements, and errors.
+   * Log dust debug statements, info statements, warning statements, and errors.
+   * Filters out the messages based on the dust.debuglevel.
    * This default implementation will print to the console if it exists.
    * @param {String|Error} message the message to print/throw
    * @param {String} type the severity of the message(ERROR, WARN, INFO, or DEBUG)
@@ -55,31 +74,6 @@
       }
       dust.logQueue.push({message: message, type: type});
       logger.log('[DUST ' + type + ']: ' + message);
-    }
-
-    if (!dust.silenceErrors && type === ERROR) {
-      if (typeof message === 'string') {
-        throw new Error(message);
-      } else {
-        throw message;
-      }
-    }
-  };
-
-  /**
-   * If debugging is turned on(dust.isDebug=true) log the error message and throw it.
-   * Otherwise try to keep rendering.  This is useful to fail hard in dev mode, but keep rendering in production.
-   * @param {Error} error the error message to throw
-   * @param {Object} chunk the chunk the error was thrown from
-   * @public
-   */
-  dust.onError = function(error, chunk) {
-    logger.log('[!!!DEPRECATION WARNING!!!]: dust.onError will no longer return a chunk object.');
-    dust.log(error.message || error, ERROR);
-    if(!dust.silenceErrors) {
-      throw error;
-    } else {
-      return chunk;
     }
   };
 
@@ -99,17 +93,18 @@
     try {
       dust.load(name, chunk, Context.wrap(context, name)).end();
     } catch (err) {
-      dust.log(err, ERROR);
+      chunk.setError(err);
     }
   };
 
   dust.stream = function(name, context) {
-    var stream = new Stream();
+    var stream = new Stream(),
+        chunk = stream.head;
     dust.nextTick(function() {
       try {
         dust.load(name, stream.head, Context.wrap(context, name)).end();
       } catch (err) {
-        dust.log(err, ERROR);
+        chunk.setError(err);
       }
     });
     return stream;
@@ -321,7 +316,7 @@
   Context.prototype._get = function(cur, down) {
     var ctx = this.stack,
         i = 1,
-        value, first, len, ctxThis;
+        value, first, len, ctxThis, fn;
     first = down[0];
     len = down.length;
 
@@ -366,14 +361,15 @@
 
     // Return the ctx or a function wrapping the application of the context.
     if (typeof ctx === 'function') {
-      var fn = function() {
+      fn = function() {
         try {
           return ctx.apply(ctxThis, arguments);
         } catch (err) {
-          return dust.log(err, ERROR);
+          dust.log(err, ERROR);
+          throw err;
         }
       };
-      fn.isFunction = true;
+      fn.__dustBody = !!ctx.__dustBody;
       return fn;
     } else {
       if (ctx === undefined) {
@@ -524,7 +520,6 @@
       this.events = {};
     }
     if (!this.events[type]) {
-      dust.log('Event type [' + type + '] does not exist. Using just the specified callback.', WARN);
       if(callback) {
         this.events[type] = callback;
       } else {
@@ -590,7 +585,12 @@
 
     this.next = branch;
     this.flushable = true;
-    callback(branch);
+    try {
+      callback(branch);
+    } catch(e) {
+      dust.log(e, ERROR);
+      branch.setError(e);
+    }
     return cursor;
   };
 
@@ -616,7 +616,6 @@
 
   Chunk.prototype.reference = function(elem, context, auto, filters) {
     if (typeof elem === 'function') {
-      elem.isFunction = true;
       // Changed the function calling to use apply with the current context to make sure
       // that "this" is wat we expect it to be inside the function
       elem = elem.apply(context.current(), [this, context, null, {auto: auto, filters: filters}]);
@@ -633,8 +632,13 @@
 
   Chunk.prototype.section = function(elem, context, bodies, params) {
     // anonymous functions
-    if (typeof elem === 'function') {
-      elem = elem.apply(context.current(), [this, context, bodies, params]);
+    if (typeof elem === 'function' && !elem.__dustBody) {
+      try {
+        elem = elem.apply(context.current(), [this, context, bodies, params]);
+      } catch(e) {
+        dust.log(e, ERROR);
+        return this.setError(e);
+      }
       // functions that return chunks are assumed to have handled the body and/or have modified the chunk
       // use that return value as the current chunk and go to the next method in the chain
       if (elem instanceof Chunk) {
@@ -781,15 +785,15 @@
   Chunk.prototype.helper = function(name, context, bodies, params) {
     var chunk = this;
     // handle invalid helpers, similar to invalid filters
-    try {
-      if(dust.helpers[name]) {
+    if(dust.helpers[name]) {
+      try {
         return dust.helpers[name](chunk, context, bodies, params);
-      } else {
-        dust.log('Invalid helper [' + name + ']', WARN);
-        return chunk;
+      } catch(e) {
+        dust.log('Error in ' + name + ' helper: ' + e, ERROR);
+        return chunk.setError(e);
       }
-    } catch (err) {
-      dust.log(err, ERROR);
+    } else {
+      dust.log('Invalid helper [' + name + ']', WARN);
       return chunk;
     }
   };
@@ -813,6 +817,13 @@
     return this;
   };
 
+  // Chunk aliases
+  for(var f in Chunk.prototype) {
+    if(dust._aliases[f]) {
+      Chunk.prototype[dust._aliases[f]] = Chunk.prototype[f];
+    }
+  }
+
   function Tap(head, tail) {
     this.head = head;
     this.tail = tail;
@@ -832,7 +843,7 @@
     return value;
   };
 
-  var HCHARS = new RegExp(/[&<>\"\']/),
+  var HCHARS = /[&<>"']/,
       AMP    = /&/g,
       LT     = /</g,
       GT     = />/g,
@@ -994,7 +1005,7 @@
         peg$c42 = { type: "literal", value: "~", description: "\"~\"" },
         peg$c43 = function(k) { return ["special", k].concat([['line', line()], ['col', column()]]) },
         peg$c44 = { type: "other", description: "identifier" },
-        peg$c45 = function(p) { var arr = ["path"].concat(p); arr.text = p[1].join('.'); return arr; },
+        peg$c45 = function(p) { var arr = ["path"].concat(p); arr.text = p[1].join('.').replace(/,line,\d+,col,\d+/g,''); return arr; },
         peg$c46 = function(k) { var arr = ["key", k]; arr.text = k; return arr; },
         peg$c47 = { type: "other", description: "number" },
         peg$c48 = function(n) { return ['literal', n]; },
@@ -3562,7 +3573,7 @@
   var compiler = {},
       isArray = dust.isArray;
 
-  
+
   compiler.compile = function(source, name) {
     // the name parameter is optional.
     // this can happen for templates that are rendered immediately (renderSource which calls compileFn) or
@@ -3570,9 +3581,9 @@
     //
     // for the common case (using compile and render) a name is required so that templates will be cached by name and rendered later, by name.
     if (!name && name !== null) {
-      dust.log(new Error("Template name parameter cannot be undefined when calling dust.compile"), 'ERROR');
+      throw new Error('Template name parameter cannot be undefined when calling dust.compile');
     }
- 
+
     try {
       var ast = filterAST(parse(source));
       return compile(ast, name);
@@ -3599,7 +3610,7 @@
     body:      compactBuffers,
     buffer:    noop,
     special:   convertSpecial,
-    format:    nullify,        // TODO: convert format
+    format:    format,
     reference: visit,
     '#':       visit,
     '?':       visit,
@@ -3656,9 +3667,10 @@
     for (i=1, len=node.length; i<len; i++) {
       res = compiler.filterNode(context, node[i]);
       if (res) {
-        if (res[0] === 'buffer') {
+        if (res[0] === 'buffer' || res[0] === 'format') {
           if (memo) {
-            memo[1] += res[1];
+            memo[0] = (res[0] === 'buffer') ? 'buffer' : memo[0];
+            memo[1] += res.slice(1, -2).join('');
           } else {
             memo = res;
             out.push(res);
@@ -3681,7 +3693,7 @@
   };
 
   function convertSpecial(context, node) {
-    return ['buffer', specialChars[node[1]]];
+    return ['buffer', specialChars[node[1]], node[2], node[3]];
   }
 
   function noop(context, node) {
@@ -3689,6 +3701,10 @@
   }
 
   function nullify(){}
+
+  function format(context, node) {
+    return dust.config.whitespace ? node : null;
+  }
 
   function compile(ast, name) {
     var context = {
@@ -3732,7 +3748,7 @@
 
     for (i=0, len=bodies.length; i<len; i++) {
       out[i] = 'function body_' + i + '(chk,ctx){' +
-          blx + 'return chk' + bodies[i] + ';}';
+          blx + 'return chk' + bodies[i] + ';}body_' + i + '.__dustBody=!0;';
     }
     return out.join('');
   }
@@ -3759,15 +3775,15 @@
     },
 
     buffer: function(context, node) {
-      return '.write(' + escape(node[1]) + ')';
+      return '.w(' + escape(node[1]) + ')';
     },
 
     format: function(context, node) {
-      return '.write(' + escape(node[1] + node[2]) + ')';
+      return '.w(' + escape(node[1] + node[2]) + ')';
     },
 
     reference: function(context, node) {
-      return '.reference(' + compiler.compileNode(context, node[1]) +
+      return '.f(' + compiler.compileNode(context, node[1]) +
         ',ctx,' + compiler.compileNode(context, node[2]) + ')';
     },
 
@@ -3814,7 +3830,7 @@
     },
 
     '@': function(context, node) {
-      return '.helper(' +
+      return '.h(' +
         escape(node[1].text) +
         ',' + compiler.compileNode(context, node[2]) + ',' +
         compiler.compileNode(context, node[4]) + ',' +
@@ -3854,7 +3870,7 @@
     },
 
     partial: function(context, node) {
-      return '.partial(' +
+      return '.p(' +
           compiler.compileNode(context, node[1]) +
           ',' + compiler.compileNode(context, node[2]) +
           ',' + compiler.compileNode(context, node[3]) + ')';
@@ -3875,7 +3891,7 @@
       if (out.length) {
         return '{' + out.join(',') + '}';
       }
-      return 'null';
+      return '{}';
     },
 
     bodies: function(context, node) {
@@ -3923,12 +3939,12 @@
       return escape(node[1]);
     },
     raw: function(context, node) {
-      return ".write(" + escape(node[1]) + ")";
+      return ".w(" + escape(node[1]) + ")";
     }
   };
 
   function compileSection(context, node, cmd) {
-    return '.' + cmd + '(' +
+    return '.' + (dust._aliases[cmd] || cmd) + '(' +
       compiler.compileNode(context, node[1]) +
       ',' + compiler.compileNode(context, node[2]) + ',' +
       compiler.compileNode(context, node[4]) + ',' +
@@ -3962,8 +3978,7 @@
   dust.pragmas = compiler.pragmas;
   dust.compileNode = compiler.compileNode;
   dust.nodes = compiler.nodes;
-  
+
   return compiler;
 
 }));
-

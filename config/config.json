@@ -30,6 +30,11 @@
         "fallback": "en-US"
     },
     
+
+    "databaseConfig": {
+      "host": "localhost",
+      "database": "SampleKrakenJS"
+    },
     
 
     "middleware": {
