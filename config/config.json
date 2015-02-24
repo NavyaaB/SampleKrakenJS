@@ -35,6 +35,11 @@
       "host": "localhost",
       "database": "SampleKrakenJS"
     },
+
+
+    "bcrypt": {
+      "difficulty": 8
+    },
     
 
     "middleware": {
